@@ -18,9 +18,7 @@ File Created: Mar 2013
 
 #include <type_traits>
 #include <initializer_list>
-#include <thread>
 #include <mutex>
-#include <atomic>
 #include <exception>
 #include <algorithm> // Boost.ASIO needs std::min and std::max
 #if !defined(_WIN32_WINNT) && defined(WIN32)
@@ -33,6 +31,19 @@ File Created: Mar 2013
 #include "boost/asio.hpp"
 #include "boost/thread/thread.hpp"
 #include "boost/thread/future.hpp"
+#include "boost/foreach.hpp"
+
+#if defined(_CPPLIB_VER) && _CPPLIB_VER <540 // Dinkumware without <atomic>
+#include <boost\atomic.hpp>
+typedef boost::thread thread; 
+#define BOOST_AFIO_USE_BOOST_ATOMIC
+#else
+#include <thread>
+#include <atomic>
+typedef std::thread thread;
+#endif
+
+
 #include "config.hpp"
 #include "detail/Utility.hpp"
 
@@ -180,6 +191,49 @@ public:
 	packaged_task &operator=(packaged_task &&o) { static_cast<Base &&>(*this)=std::move(o); return *this; }
 };
 
+
+template <class T> 
+class atomic  
+#ifdef BOOST_AFIO_USE_BOOST_ATOMIC
+	: public boost::atomic<T>
+{
+	typedef boost::atomic<T> Base;
+#else
+	: public std::atomic<T>
+{
+	typedef std::atomic<T> Base;
+#endif
+
+public:
+	atomic(): Base() {}
+	BOOST_CONSTEXPR atomic(T v) BOOST_NOEXCEPT : Base(v) {}
+	T operator=(T v) volatile BOOST_NOEXCEPT { return Base::operator=(v); } 
+
+	//boost atomic doesn't have the non-volatile version
+#ifndef BOOST_AFIO_USE_BOOST_ATOMIC
+	T operator=(T v) BOOST_NOEXCEPT { return Base::operator=(v); }
+#endif
+
+#ifdef BOOST_NO_CXX11_DELETED_FUNCTIONS
+private:
+    atomic(const atomic &) /* =delete */ ;
+    atomic & operator=(const atomic &) volatile /* =delete */ ;
+
+#ifndef BOOST_AFIO_USE_BOOST_ATOMIC	
+	atomic& operator=(const atomic&);
+#endif
+
+#else
+    atomic(const atomic &) = delete;
+    atomic & operator=(const atomic &) volatile = delete;
+
+#ifndef BOOST_AFIO_USE_BOOST_ATOMIC	
+	atomic& operator=(const atomic&) = delete;
+#endif
+
+#endif
+};//end boost::afio::atomic
+
 /*! \class thread_pool
 \brief A very simple thread pool based on Boost.ASIO and std::thread
 */
@@ -213,8 +267,8 @@ public:
 	~thread_pool()
 	{
 		service.stop();
-		for(auto &i : workers)
-			i->join();
+		BOOST_FOREACH(auto &i, workers)
+        {	i->join();}
 	}
 	//! Returns the underlying io_service
 	boost::asio::io_service &io_service() { return service; }
@@ -342,7 +396,7 @@ namespace detail {
 		std::chrono::system_clock::time_point _opened;
 		std::filesystem::path _path; // guaranteed canonical
 	protected:
-		std::atomic<off_t> bytesread, byteswritten, byteswrittenatlastfsync;
+		atomic<off_t> bytesread, byteswritten, byteswrittenatlastfsync;
 		async_io_handle(async_file_io_dispatcher_base *parent, const std::filesystem::path &path) : _parent(parent), _opened(std::chrono::system_clock::now()), _path(path), bytesread(0), byteswritten(0), byteswrittenatlastfsync(0) { }
 	public:
 		virtual ~async_io_handle() { }
@@ -879,7 +933,7 @@ namespace detail
 {
 	struct when_all_count_completed_state
 	{
-		std::atomic<size_t> togo;
+		atomic<size_t> togo;
 		std::vector<std::shared_ptr<detail::async_io_handle>> out;
 		promise<std::vector<std::shared_ptr<detail::async_io_handle>>> done;
 		when_all_count_completed_state(size_t outsize) : togo(outsize), out(outsize) { }
@@ -899,8 +953,8 @@ namespace detail
 			bool done=false;
 			try
 			{
-				for(auto &i : state->out)
-					i.get();
+				BOOST_FOREACH(auto &i, state->out)
+                {	i.get();}
 			}
 			catch(...)
 			{
@@ -935,8 +989,10 @@ inline future<std::vector<std::shared_ptr<detail::async_io_handle>>> when_all(st
 	std::vector<std::pair<async_op_flags, std::function<async_file_io_dispatcher_base::completion_t>>> callbacks;
 	callbacks.reserve(inputs.size());
 	size_t idx=0;
-	for(auto &i : inputs)
-		callbacks.push_back(std::make_pair(async_op_flags::ImmediateCompletion, std::bind(&detail::when_all_count_completed_nothrow, std::placeholders::_1, std::placeholders::_2, state, idx++)));
+	BOOST_FOREACH(auto &i, inputs)
+    {	
+        callbacks.push_back(std::make_pair(async_op_flags::ImmediateCompletion, std::bind(&detail::when_all_count_completed_nothrow, std::placeholders::_1, std::placeholders::_2, state, idx++)));
+    }
 	inputs.front().parent->completion(inputs, callbacks);
 	return state->done.get_future();
 }
@@ -959,8 +1015,10 @@ inline future<std::vector<std::shared_ptr<detail::async_io_handle>>> when_all(st
 	std::vector<std::pair<async_op_flags, std::function<async_file_io_dispatcher_base::completion_t>>> callbacks;
 	callbacks.reserve(inputs.size());
 	size_t idx=0;
-	for(auto &i : inputs)
-		callbacks.push_back(std::make_pair(async_op_flags::ImmediateCompletion, std::bind(&detail::when_all_count_completed, std::placeholders::_1, std::placeholders::_2, state, idx++)));
+	BOOST_FOREACH(auto &i, inputs)
+    {	
+        callbacks.push_back(std::make_pair(async_op_flags::ImmediateCompletion, std::bind(&detail::when_all_count_completed, std::placeholders::_1, std::placeholders::_2, state, idx++)));
+    }
 	inputs.front().parent->completion(inputs, callbacks);
 	return state->done.get_future();
 }
@@ -978,8 +1036,8 @@ inline future<std::vector<std::shared_ptr<detail::async_io_handle>>> when_all(st
 {
 	std::vector<async_io_op> ops;
 	ops.reserve(_ops.size());
-	for(auto &&i : _ops)
-		ops.push_back(std::move(i));
+	BOOST_FOREACH(auto &&i, _ops)
+    {	ops.push_back(std::move(i));}
 	return when_all(_, ops.begin(), ops.end());
 }
 /*! \brief Returns a result when all the supplied ops complete. Propagates exception states.
@@ -995,8 +1053,8 @@ inline future<std::vector<std::shared_ptr<detail::async_io_handle>>> when_all(st
 {
 	std::vector<async_io_op> ops;
 	ops.reserve(_ops.size());
-	for(auto &&i : _ops)
-		ops.push_back(std::move(i));
+	BOOST_FOREACH(auto &&i, _ops)
+    {	ops.push_back(std::move(i));}
 	return when_all(ops.begin(), ops.end());
 }
 /*! \brief Returns a result when the supplied op completes. Does not propagate exception states.
@@ -1122,7 +1180,7 @@ template<> struct async_data_op_req<void> // For reading
 	{
 		if(!precondition.validate()) return false;
 		if(buffers.empty()) return false;
-		for(auto &b : buffers)
+		BOOST_FOREACH(auto &b, buffers)
 		{
 			if(!boost::asio::buffer_cast<const void *>(b) || !boost::asio::buffer_size(b)) return false;
 			if(!!(precondition.parent->fileflags(file_flags::None)&file_flags::OSDirect))
@@ -1157,9 +1215,9 @@ template<> struct async_data_op_req<const void> // For writing
 	//! \mconstr
 	async_data_op_req(async_data_op_req &&o) : precondition(std::move(o.precondition)), buffers(std::move(o.buffers)), where(std::move(o.where)) { }
 	//! \cconstr
-	async_data_op_req(const async_data_op_req<void> &o) : precondition(o.precondition), where(o.where) { buffers.reserve(o.buffers.capacity()); for(auto &i: o.buffers) buffers.push_back(i); }
+    async_data_op_req(const async_data_op_req<void> &o) : precondition(o.precondition), where(o.where) { buffers.reserve(o.buffers.capacity()); BOOST_FOREACH(auto &i, o.buffers){ buffers.push_back(i);} }
 	//! \mconstr
-	async_data_op_req(async_data_op_req<void> &&o) : precondition(std::move(o.precondition)), where(o.where) { buffers.reserve(o.buffers.capacity()); for(auto &&i: o.buffers) buffers.push_back(std::move(i)); }
+	 async_data_op_req(async_data_op_req<void> &&o) : precondition(std::move(o.precondition)), where(o.where) { buffers.reserve(o.buffers.capacity()); BOOST_FOREACH(auto &&i, o.buffers){ buffers.push_back(std::move(i)); }}
 	//! \cassign
 	async_data_op_req &operator=(const async_data_op_req &o) { precondition=o.precondition; buffers=o.buffers; where=o.where; return *this; }
 	//! \massign
@@ -1173,7 +1231,7 @@ template<> struct async_data_op_req<const void> // For writing
 	{
 		if(!precondition.validate()) return false;
 		if(buffers.empty()) return false;
-		for(auto &b : buffers)
+		BOOST_FOREACH(auto &b , buffers)
 		{
 			if(!boost::asio::buffer_cast<const void *>(b) || !boost::asio::buffer_size(b)) return false;
 			if(!!(precondition.parent->fileflags(file_flags::None)&file_flags::OSDirect))
@@ -1373,7 +1431,7 @@ template<class R> inline std::pair<std::vector<future<R>>, std::vector<async_io_
 		(*c)();
 		return std::make_pair(true, _);
 	};
-	for(auto &t : callables)
+	BOOST_FOREACH(auto &t, callables)
 	{
 		std::shared_ptr<tasktype> c(std::make_shared<tasktype>(std::function<R()>(t)));
 		retfutures.push_back(c->get_future());
