@@ -13,8 +13,11 @@ Created: Feb 2013
 //#define MAXIMUM_TEST_CPUS 1
 
 #ifdef __MINGW32__
-// Mingw doesn't define putenv() needed by Boost.Test
-//extern "C" int putenv(char*);
+#include <stdlib.h> // To pull in __MINGW64_VERSION_MAJOR
+#ifndef __MINGW64_VERSION_MAJOR
+// Mingw32 doesn't define putenv() needed by Boost.Test
+extern "C" int putenv(char*);
+#endif
 // Mingw doesn't define tzset() either
 extern "C" void tzset(void);
 #endif
@@ -176,9 +179,9 @@ struct BOOST_AUTO_TC_UNIQUE_ID( test_name ) {};                         \
                                                                         \
 BOOST_AUTO_TU_REGISTRAR( test_name )(                                   \
     boost::unit_test::make_test_case(                                   \
-        &BOOST_AUTO_TC_INVOKER( test_name ),                            \
-        #test_name, NULL, 0 ),                                          \
-    boost::unit_test::decorator::collector::instance() );               \
+        &BOOST_AUTO_TC_INVOKER( test_name ), #test_name ),              \
+    boost::unit_test::ut_detail::auto_tc_exp_fail<                      \
+        BOOST_AUTO_TC_UNIQUE_ID( test_name )>::instance()->value() );   \
                                                                         \
 void test_name::test_method()                                           \
 
